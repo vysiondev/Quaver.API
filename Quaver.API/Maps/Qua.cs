@@ -280,7 +280,8 @@ namespace Quaver.API.Maps
                     {
                         Bpm = tp.Bpm,
                         Signature = 0,
-                        StartTime = tp.StartTime
+                        StartTime = tp.StartTime,
+                        Hidden = tp.Hidden
                     });
                 }
                 else
@@ -565,11 +566,7 @@ namespace Quaver.API.Maps
         public SliderVelocityInfo GetScrollVelocityAt(double time)
         {
             var index = SliderVelocities.FindLastIndex(x => x.StartTime <= time);
-
-            if (index == -1)
-                return SliderVelocities.Count == 0 ? null : SliderVelocities.First();
-
-            return SliderVelocities[index];
+            return index == -1 ? null : SliderVelocities[index];
         }
 
         /// <summary>
