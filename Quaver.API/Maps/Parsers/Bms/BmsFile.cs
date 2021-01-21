@@ -326,7 +326,7 @@ namespace Quaver.API.Maps.Parsers.Bms
                     foreach (var line in trackData[track].Where(line => line.Message.Length % 2 == 0))
                     {
                         // There is a note in p2 side which would overlap player 1.
-                        if (p2Regex.IsMatch(line.Channel) || p2lnRegex.IsMatch(line.Channe))
+                        if (p2Regex.IsMatch(line.Channel) || p2lnRegex.IsMatch(line.Channel))
                         {
                             IsValid = false;
                             return;
