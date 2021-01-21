@@ -12,13 +12,15 @@ namespace Quaver.API.Maps.Parsers.Bms
     public class BmsFile
     {
         private readonly Regex mineRegex = new Regex("[d-e][1-9]");
-        private readonly Regex normalNoteRegex = new Regex("[1-2][1-z]");
-        private readonly Regex longNoteRegex = new Regex("[5-6][1-z]");
+        private readonly Regex normalNoteRegex = new Regex("[1][1-z]");
+        private readonly Regex p2Regex = new Regex("[2][1-z]");
+        private readonly Regex p2lnRegex = new Regex("[6][1-z]");
+        private readonly Regex longNoteRegex = new Regex("[5][1-z]");
 
-        private readonly BmsFileMetadata metadata = new BmsFileMetadata()
+        private readonly BmsFileMetadata metadata = new BmsFileMetadata
         {
             Title = "No title",
-            PlayLevel = "?",
+            PlayLevel = "Unknown",
             Artist = "Unknown Artist",
             Tags = "BMS"
         };
@@ -82,34 +84,13 @@ namespace Quaver.API.Maps.Parsers.Bms
                     if (line.Length < 7 || line[6] != ':')
                     {
                         var lineWithoutHash = lineLower.Substring(1);
-                        // Player mode (1 = 1P, 2 = 2P, 3 = DP)
-                        if (lineWithoutHash.StartsWith("player"))
+                        // Player mode must be 1 or this will fail.
+                        if (lineWithoutHash.StartsWith("player") && (line.Length < 9 || line[8] != '1'))
                         {
-                            if (line.Length < 9)
-                            {
-                                IsValid = false;
-                                return;
-                            }
-
-                            switch (line[8])
-                            {
-                                case '1':
-                                case '2':
-                                    // Meant for 1st or 2nd player.
-                                    // It's okay if it's either one since the regex sees P1 and P2
-                                    // channels as indifferent.
-                                    break;
-                                case '3':
-                                    // Double Play (14K?) not supported.
-                                    IsValid = false;
-                                    return;
-                                default:
-                                    // A player header was defined, but isn't a valid value
-                                    IsValid = false;
-                                    return;
-                            }
+                            IsValid = false;
+                            return;
                         }
-                        else if (lineWithoutHash.StartsWith("genre"))
+                        if (lineWithoutHash.StartsWith("genre"))
                         {
                             if (line.Length < 8) continue;
                             metadata.Tags = line.Substring(7);
@@ -344,6 +325,12 @@ namespace Quaver.API.Maps.Parsers.Bms
                     // All messages from this point forth need to be hexadecimal.
                     foreach (var line in trackData[track].Where(line => line.Message.Length % 2 == 0))
                     {
+                        // There is a note in p2 side which would overlap player 1.
+                        if (p2Regex.IsMatch(line.Channel) || p2lnRegex.IsMatch(line.Channe))
+                        {
+                            IsValid = false;
+                            return;
+                        }
                         if (!(normalNoteRegex.IsMatch(line.Channel) ||
                               longNoteRegex.IsMatch(line.Channel) || line.Channel == "01" ))
                         {
