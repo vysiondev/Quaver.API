@@ -11,5 +11,7 @@
         public string Creator { get; set; }
 
         public string PlayLevel { get; set; }
+
+        public string StageFile { get; set; }
     }
 }

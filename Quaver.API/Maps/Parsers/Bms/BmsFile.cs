@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using Quaver.API.Enums;
 using Quaver.API.Maps.Parsers.Bms.Utilities;
@@ -14,7 +15,7 @@ namespace Quaver.API.Maps.Parsers.Bms
         private readonly Regex mineRegex = new Regex("[d-e][1-9]");
         private readonly Regex normalNoteRegex = new Regex("[1][1-z]");
         private readonly Regex p2Regex = new Regex("[2][1-z]");
-        private readonly Regex p2lnRegex = new Regex("[6][1-z]");
+        private readonly Regex p2LnRegex = new Regex("[6][1-z]");
         private readonly Regex longNoteRegex = new Regex("[5][1-z]");
 
         private readonly BmsFileMetadata metadata = new BmsFileMetadata
@@ -25,21 +26,20 @@ namespace Quaver.API.Maps.Parsers.Bms
             Tags = "BMS"
         };
 
-        public readonly List<BmsSoundEffect> SoundEffects = new List<BmsSoundEffect>();
+        private readonly List<BmsSoundEffect> soundEffects = new List<BmsSoundEffect>();
 
-        public readonly List<BmsHitObject> HitObjects = new List<BmsHitObject>();
+        private readonly List<BmsHitObject> hitObjects = new List<BmsHitObject>();
 
-        public readonly List<BmsTimingPoint> TimingPoints = new List<BmsTimingPoint>();
+        private readonly List<BmsTimingPoint> timingPoints = new List<BmsTimingPoint>();
 
         private readonly bool hasScratchKey;
 
         private readonly List<string> keySoundStringArray = new List<string>();
 
-        public readonly bool IsValid = true;
+        public readonly string InvalidReason;
 
         public BmsFile(string filePath)
         {
-
             var trackData = new Dictionary<int, List<BmsLocalTrackData>>();
 
             // BM98 original specification defaults to 130.0 if not overwritten/#BPM header is omitted.
@@ -73,7 +73,7 @@ namespace Quaver.API.Maps.Parsers.Bms
 
             try
             {
-                foreach (var line in File.ReadAllLines(filePath))
+                foreach (var line in File.ReadAllLines(filePath, Encoding.GetEncoding("shift_jis")))
                 {
                     if (!line.StartsWith("#"))
                         continue;
@@ -85,11 +85,12 @@ namespace Quaver.API.Maps.Parsers.Bms
                     {
                         var lineWithoutHash = lineLower.Substring(1);
                         // Player mode must be 1 or this will fail.
-                        if (lineWithoutHash.StartsWith("player") && (line.Length < 9 || line[8] != '1'))
+                        if (lineWithoutHash.StartsWith("player") && ( line.Length < 9 || line[8] != '1' ))
                         {
-                            IsValid = false;
+                            InvalidReason = "The #PLAYER header is not equal to 1.";
                             return;
                         }
+
                         if (lineWithoutHash.StartsWith("genre"))
                         {
                             if (line.Length < 8) continue;
@@ -111,7 +112,7 @@ namespace Quaver.API.Maps.Parsers.Bms
                         {
                             if (line.Length < 8)
                             {
-                                IsValid = false;
+                                InvalidReason = "The #LNOBJ header was specified, but is too short.";
                                 return;
                             }
 
@@ -119,7 +120,7 @@ namespace Quaver.API.Maps.Parsers.Bms
                             // LNOBJ must be 2 characters.
                             if (lnObject.Length != 2)
                             {
-                                IsValid = false;
+                                InvalidReason = "The #LNOBJ header value must be exactly 2 bytes.";
                                 return;
                             }
                         }
@@ -139,16 +140,26 @@ namespace Quaver.API.Maps.Parsers.Bms
                         {
                             if (line.Length < 6)
                             {
-                                IsValid = false;
+                                InvalidReason = "The #BPM header was specified, but it is too short.";
                                 return;
                             }
 
                             startThisTrackWithBpm = double.Parse(line.Substring(5));
-                            TimingPoints.Add(new BmsTimingPoint
+                            timingPoints.Add(new BmsTimingPoint
                             {
                                 Bpm = startThisTrackWithBpm,
                                 StartTime = 0.0
                             });
+                        }
+                        // The stage file (will be used as the bg)
+                        else if (lineWithoutHash.StartsWith("stagefile"))
+                        {
+                            if (line.Length < 12)
+                            {
+                                continue;
+                            }
+
+                            metadata.StageFile = line.Substring(11);
                         }
                         // Tempo change (#BPMXX)
                         else if (lineWithoutHash.StartsWith("bpm"))
@@ -185,7 +196,16 @@ namespace Quaver.API.Maps.Parsers.Bms
                                 continue;
                             }
 
-                            keySoundStringArray.Add(line.Substring(7));
+                            var soundEffect =
+                                new BmsSoundEffectFixer().SearchForSoundFile(Path.GetDirectoryName(filePath),
+                                    line.Substring(7));
+                            if (string.IsNullOrEmpty(soundEffect))
+                            {
+                                InvalidReason = "A sound effect in #WAV did not correspond to any file in the folder";
+                                return;
+                            }
+
+                            keySoundStringArray.Add(soundEffect);
                             hitSoundHexList.Add(lineLower.Substring(4, 2));
                         }
 
@@ -202,7 +222,7 @@ namespace Quaver.API.Maps.Parsers.Bms
                     // Also, maps with mines typically use per-column SV, which cannot be used here.
                     if (mineRegex.IsMatch(channel))
                     {
-                        IsValid = false;
+                        InvalidReason = "Cannot parse maps with mines/fakes.";
                         return;
                     }
 
@@ -216,7 +236,7 @@ namespace Quaver.API.Maps.Parsers.Bms
                 }
 
                 // If there is no #MAKER header, the map creator must be the artist.
-                if (metadata.Creator == null)
+                if (string.IsNullOrEmpty(metadata.Creator))
                 {
                     metadata.Creator = metadata.Artist;
                 }
@@ -251,7 +271,8 @@ namespace Quaver.API.Maps.Parsers.Bms
                                 if (line.Message == null)
                                 {
                                     // Lone tempo change (no value)
-                                    localTempoChanges.Add(new BmsLocalTempoChange{Position = 0.0, Bpm = 0.0, IsNegative = false});
+                                    localTempoChanges.Add(new BmsLocalTempoChange
+                                        {Position = 0.0, Bpm = 0.0, IsNegative = false});
                                     continue;
                                 }
 
@@ -270,7 +291,10 @@ namespace Quaver.API.Maps.Parsers.Bms
                                     {
                                         continue;
                                     }
-                                    var bpm = line.Channel == "03" ? int.Parse(value, System.Globalization.NumberStyles.HexNumber) : bpmChanges[value];
+
+                                    var bpm = line.Channel == "03"
+                                        ? int.Parse(value, System.Globalization.NumberStyles.HexNumber)
+                                        : bpmChanges[value];
                                     localTempoChanges.Add(new BmsLocalTempoChange
                                     {
                                         Position = PositionUtility.GetPositionInTrack(i, line.Message.Length),
@@ -286,6 +310,7 @@ namespace Quaver.API.Maps.Parsers.Bms
                                 {
                                     continue;
                                 }
+
                                 for (var i = 0; i < line.Message.Length / 2; i++)
                                 {
                                     var value = GetHexValueOfIndex(i, line.Message);
@@ -298,6 +323,7 @@ namespace Quaver.API.Maps.Parsers.Bms
                                     {
                                         continue;
                                     }
+
                                     localStopCommands.Add(new BmsLocalStopCommand
                                     {
                                         Position = PositionUtility.GetPositionInTrack(i, line.Message.Length),
@@ -326,13 +352,14 @@ namespace Quaver.API.Maps.Parsers.Bms
                     foreach (var line in trackData[track].Where(line => line.Message.Length % 2 == 0))
                     {
                         // There is a note in p2 side which would overlap player 1.
-                        if (p2Regex.IsMatch(line.Channel) || p2lnRegex.IsMatch(line.Channel))
+                        if (p2Regex.IsMatch(line.Channel) || p2LnRegex.IsMatch(line.Channel))
                         {
-                            IsValid = false;
+                            InvalidReason = "There is a note in the P2 side which would overlap P1.";
                             return;
                         }
-                        if (!(normalNoteRegex.IsMatch(line.Channel) ||
-                              longNoteRegex.IsMatch(line.Channel) || line.Channel == "01" ))
+
+                        if (!( normalNoteRegex.IsMatch(line.Channel) ||
+                               longNoteRegex.IsMatch(line.Channel) || line.Channel == "01" ))
                         {
                             continue;
                         }
@@ -344,6 +371,7 @@ namespace Quaver.API.Maps.Parsers.Bms
                             {
                                 break;
                             }
+
                             var value = GetHexValueOfIndex(i, line.Message);
 
                             if (value == "00")
@@ -363,10 +391,10 @@ namespace Quaver.API.Maps.Parsers.Bms
                                 var hitObject = new BmsHitObject
                                 {
                                     Lane = laneInt,
-                                    StartTime = (int)( startTrackWithTime + objectStartTimeMs )
+                                    StartTime = (int) ( startTrackWithTime + objectStartTimeMs )
                                 };
                                 // Lane 6 is basically (x)6
-                                if ( laneInt == 6 )
+                                if (laneInt == 6)
                                 {
                                     hasScratchKey = true;
                                     hitObject.Lane = 8;
@@ -381,50 +409,55 @@ namespace Quaver.API.Maps.Parsers.Bms
                                 // For compatibility reasons, it's reasonable to assume that it cannot be parsed.
                                 if (hitObject.Lane > 8)
                                 {
-                                    IsValid = false;
+                                    InvalidReason = "There is a note defined which wants a lane greater than 8.";
                                     return;
                                 }
 
                                 // LN (normal type; uses #LNOBJ)
                                 if (!string.IsNullOrEmpty(lnObject) && value == lnObject)
                                 {
-                                    if (HitObjects.Count == 0)
+                                    if (hitObjects.Count == 0)
                                     {
                                         continue;
                                     }
 
-                                    var back = HitObjects.Count - 1;
-                                    if (HitObjects[back].KeySound == null)
+                                    var back = hitObjects.Count - 1;
+                                    if (hitObjects[back].KeySound == null)
                                     {
                                         // This means the previous object was an LNOBJ, so we ignore THIS one.
                                         continue;
                                     }
 
-                                    if (HitObjects[back].StartTime >= hitObject.StartTime)
+                                    if (hitObjects[back].StartTime >= hitObject.StartTime)
                                     {
                                         // LN has a negative duration
                                         continue;
                                     }
 
-                                    HitObjects[back].IsLongNote = true;
-                                    HitObjects[back].EndTime = hitObject.StartTime;
+                                    hitObjects[back].IsLongNote = true;
+                                    hitObjects[back].EndTime = hitObject.StartTime;
                                     continue;
                                 }
+
                                 hitObject.KeySound = sfx;
 
                                 // LN (special type; uses channels 51-59)
+                                // Needs more testing because i never found any map that uses these channels.
+                                // However, it appears in some bms formats.
                                 if (longNoteRegex.IsMatch(line.Channel))
                                 {
                                     if (!longNoteTracker.ContainsKey(hitObject.Lane))
                                     {
                                         longNoteTracker.Add(hitObject.Lane, 0.0);
                                     }
+
                                     if (longNoteTracker[hitObject.Lane] != 0.0)
                                     {
                                         hitObject.EndTime = hitObject.StartTime;
                                         hitObject.StartTime = longNoteTracker[hitObject.Lane];
                                         hitObject.IsLongNote = true;
-                                        if (longNoteSoundEffectTracker.ContainsKey(hitObject.Lane) && longNoteSoundEffectTracker[hitObject.Lane] != null)
+                                        if (longNoteSoundEffectTracker.ContainsKey(hitObject.Lane) &&
+                                            longNoteSoundEffectTracker[hitObject.Lane] != null)
                                         {
                                             hitObject.KeySound = longNoteSoundEffectTracker[hitObject.Lane];
                                         }
@@ -438,19 +471,22 @@ namespace Quaver.API.Maps.Parsers.Bms
                                         longNoteSoundEffectTracker[hitObject.Lane] = hitObject.KeySound;
                                         continue;
                                     }
+
                                     if (hitObject.EndTime <= hitObject.StartTime)
                                     {
                                         continue;
                                     }
                                 }
-                                HitObjects.Add(hitObject);
+
+                                hitObjects.Add(hitObject);
                                 continue;
                             }
+
                             if (line.Channel == "01")
                             {
                                 var soundEffect = new BmsSoundEffect
                                 {
-                                    StartTime = (int)( startTrackWithTime + objectStartTimeMs )
+                                    StartTime = (int) ( startTrackWithTime + objectStartTimeMs )
                                 };
 
                                 if (sfx != null)
@@ -462,18 +498,21 @@ namespace Quaver.API.Maps.Parsers.Bms
                                 {
                                     continue;
                                 }
-                                SoundEffects.Add(soundEffect);
+
+                                soundEffects.Add(soundEffect);
                             }
                         }
                     }
 
-                    var fullLengthOfTrack = DurationUtility.GetTotalTrackDuration(startThisTrackWithBpm, localTempoChanges,
+                    var fullLengthOfTrack = DurationUtility.GetTotalTrackDuration(startThisTrackWithBpm,
+                        localTempoChanges,
                         localStopCommands, measureScale);
-                    var timingPoints = PositionUtility.GetPositionOfTimingPoints(startTrackWithTime, startThisTrackWithBpm,
+                    var timingPoints = PositionUtility.GetPositionOfTimingPoints(startTrackWithTime,
+                        startThisTrackWithBpm,
                         localTempoChanges, localStopCommands, measureScale);
                     foreach (var t in timingPoints)
                     {
-                        TimingPoints.Add(t);
+                        this.timingPoints.Add(t);
                     }
 
                     if (localTempoChanges.Count > 0)
@@ -483,17 +522,16 @@ namespace Quaver.API.Maps.Parsers.Bms
 
                     startTrackWithTime += fullLengthOfTrack;
 
-                    TimingPoints.Add(new BmsTimingPoint()
+                    this.timingPoints.Add(new BmsTimingPoint()
                     {
                         StartTime = startTrackWithTime,
                         Bpm = startThisTrackWithBpm
                     });
                 }
             }
-            catch
+            catch (Exception e)
             {
-                // If there was a problem in parsing the map headers, the code should return.
-                IsValid = false;
+                InvalidReason = e.Message;
             }
         }
 
@@ -521,6 +559,7 @@ namespace Quaver.API.Maps.Parsers.Bms
         {
             var quaFile = new Qua
             {
+                BackgroundFile = metadata.StageFile,
                 AudioFile = "virtual",
                 SongPreviewTime = -1,
                 MapId = -1,
@@ -533,7 +572,7 @@ namespace Quaver.API.Maps.Parsers.Bms
                 Tags = metadata.Tags,
                 Creator = metadata.Creator,
                 DifficultyName = GetDifficultyName(metadata.PlayLevel),
-                Description = $"This is a BMS map converted to Quaver (original creator: {metadata.Creator})",
+                Description = $"This is a BMS map converted to Quaver",
             };
 
             foreach (var cas in keySoundStringArray)
@@ -545,7 +584,7 @@ namespace Quaver.API.Maps.Parsers.Bms
                 });
             }
 
-            foreach (var sfx in SoundEffects)
+            foreach (var sfx in soundEffects)
             {
                 quaFile.SoundEffects.Add(new SoundEffectInfo()
                 {
@@ -555,7 +594,7 @@ namespace Quaver.API.Maps.Parsers.Bms
                 });
             }
 
-            foreach (var tp in TimingPoints)
+            foreach (var tp in timingPoints)
             {
                 quaFile.TimingPoints.Add(new TimingPointInfo()
                 {
@@ -564,27 +603,35 @@ namespace Quaver.API.Maps.Parsers.Bms
                 });
             }
 
-            foreach (var obj in HitObjects)
+            foreach (var obj in hitObjects)
             {
                 quaFile.HitObjects.Add(new HitObjectInfo()
                 {
                     StartTime = (int) obj.StartTime,
                     Lane = obj.Lane,
                     EndTime = obj.IsLongNote ? (int) obj.EndTime : 0,
-                    KeySounds = obj.KeySound != null ? new List<KeySoundInfo>()
-                    {
-                        new KeySoundInfo()
+                    KeySounds = obj.KeySound != null
+                        ? new List<KeySoundInfo>()
                         {
-                            Sample = obj.KeySound.Sample,
-                            Volume = obj.KeySound.Volume
+                            new KeySoundInfo()
+                            {
+                                Sample = obj.KeySound.Sample,
+                                Volume = obj.KeySound.Volume
+                            }
                         }
-                    } : new List<KeySoundInfo>()
+                        : new List<KeySoundInfo>()
                 });
             }
 
             return quaFile;
         }
 
-        private static int getLaneNumber(string input) => "0123456789abcdefghijklmnopqrstuvwxyz".IndexOf(input, StringComparison.InvariantCulture);
+        /// <summary>
+        ///     Lambda function to find the lane number given one character.
+        /// </summary>
+        /// <param name="input"></param>
+        /// <returns></returns>
+        private static int getLaneNumber(string input) =>
+            "0123456789abcdefghijklmnopqrstuvwxyz".IndexOf(input, StringComparison.InvariantCulture);
     }
 }
