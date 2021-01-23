@@ -23,7 +23,6 @@ namespace Quaver.API.Maps.Parsers.Bms.Utilities
                 }
             }
 
-            Console.WriteLine($"No sound effect (original: {originalPath}, path to sound file: {pathToSoundFile}");
             return null;
         }
     }
