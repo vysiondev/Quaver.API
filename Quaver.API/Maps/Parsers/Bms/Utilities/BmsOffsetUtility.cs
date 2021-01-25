@@ -26,6 +26,10 @@ namespace Quaver.API.Maps.Parsers.Bms.Utilities
 
             foreach (var stop in stopCommands)
             {
+                if (stop.Duration <= 0.0)
+                {
+                    continue;
+                }
                 // The position given is not greater than the STOP command. Therefore, it would have no
                 // effect.
                 if (!( position > stop.Position )) continue;

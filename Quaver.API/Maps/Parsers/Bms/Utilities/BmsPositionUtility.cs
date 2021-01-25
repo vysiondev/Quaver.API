@@ -61,6 +61,10 @@ namespace Quaver.API.Maps.Parsers.Bms.Utilities
 
                         foreach (var stop in stopCommands)
                         {
+                            if (stop.Duration <= 0.0)
+                            {
+                                continue;
+                            }
                             if (i + 1 == tempoChanges.Count
                                 || i + 1 < tempoChanges.Count
                                 && tempoChanges[i + 1].Position > stop.Position
